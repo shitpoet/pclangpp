@@ -18,13 +18,13 @@ If anything goes wrong, it silently falls back to invoking `clang++` directly.
 Use `clang++-autopch` exactly like `clang++`:
 
 ```bash
-clang++-autopch -std=c++26 a.cpp
+clang++-autopch -std=c++26 a.cpp -o binary
 ```
 
 Wildcard "*.cpp" is supported:
 
 ```bash
-clang++-autopch -std=c++26 *.cpp
+clang++-autopch -std=c++26 *.cpp -o binary
 ```
 
 The wrapper forwards all arguments to `clang++` and preserves stdout, stderr, and exit codes.
