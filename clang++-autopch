@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+
+import random
+import sys
+import os
+from pathlib import Path
+
+
+DEFAULT_SUBDIR = ".cache/clang++-autopch"
+OLD_AGE = 14 * 24 * 3600   # 14 days
+FILES_THRESHOLD = 20       # trigger thresshold
+
+
+DEBUG = None
+
+def debug(*args, **kwargs):
+    global DEBUG
+    if DEBUG is None:
+        DEBUG = bool(os.environ.get("CLANGPP_AUTOPCH_DEBUG"))
+    if DEBUG:
+        print(*args, **kwargs, file=sys.stderr)
+
+def get_cpp_file_names(argv):
+    cpp_files = []
+    saw_wildcard = False
+
+    for arg in argv:
+        if arg == "*.cpp":
+            saw_wildcard = True
+        elif arg.endswith(".cpp"):
+            cpp_files.append(arg)
+
+    if saw_wildcard:
+        try:
+            for name in os.listdir("."):
+                if name.endswith(".cpp") and os.path.isfile(name):
+                    cpp_files.append(name)
+        except OSError:
+            pass
+
+    # remove duplicates, preserve order
+    seen = set()
+    result = []
+    for f in cpp_files:
+        if f not in seen:
+            seen.add(f)
+            result.append(f)
+
+    return result
+
+def extract_std_header_names(filename):
+    try:
+        with open(filename, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+
+    headers = []
+
+    for line in lines:
+        s = line.lstrip()
+        if not s.startswith("#include <"):
+            continue
+
+        start = s.find("<")
+        end = s.find(">", start + 1)
+        if start == -1 or end == -1:
+            continue
+
+        header = s[start + 1:end]
+        headers.append(header)
+
+    return headers
+
+def filter_clang_arguments(argv):
+    """
+    Return a filtered list of clang++ arguments that are relevant
+    for PCH compatibility.
+    """
+    IGNORE_EXACT = {
+        "-pedantic",
+        "-g", "-g3",
+        "-fno-omit-frame-pointer",
+        "-flto",
+    }
+
+    result = []
+    skip_next = False
+
+    for arg in argv:
+        if skip_next:
+            skip_next = False
+            continue
+
+        # warnings
+        if arg.startswith("-W"):
+            continue
+
+        # cpp sources / wildcard
+        if arg == "*.cpp" or arg.endswith(".cpp"):
+            continue
+
+        # output flag
+        if arg == "-o":
+            skip_next = True
+            continue
+
+        # exact ignored flags
+        if arg in IGNORE_EXACT:
+            continue
+
+        result.append(arg)
+
+    return result
+
+def stable_hash(strings, digest_size=16):
+    """
+    strings: iterable of str
+    digest_size: bytes (16 → 32 hex chars, 20 → 40 hex chars)
+    """
+    import hashlib
+
+    h = hashlib.blake2b(digest_size=digest_size)
+
+    for s in strings:
+        h.update(s.encode("utf-8"))
+        h.update(b"\0")  # separator to avoid ambiguity
+
+    return h.hexdigest()
+
+def precompile_std_headers(filtered_args, header_names, output_file):
+    """
+    output_file is the full path to <hash>.pch
+    The corresponding header will be <hash>.hpp
+    """
+    try:
+        hpp_file = output_file[:-4] + ".hpp"  # replace .pch with .hpp
+
+        # Write persistent synthetic header
+        with open(hpp_file, "w", encoding="utf-8") as f:
+            for h in header_names:
+                f.write(f"#include <{h}>\n")
+
+        # clang++ -x c++-header <filtered_args> hash.hpp -o hash.pch
+        cmd = (
+            ["clang++", "-x", "c++-header"]
+            + filtered_args
+            + [hpp_file, "-o", output_file]
+        )
+
+        import subprocess
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        return result.returncode == 0
+
+    except Exception:
+        return False
+
+def dedupe_preserve_order(seq):
+    seen = set()
+    out = []
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+def merge_headers(lst):
+    """
+    Given a list of lists of header names, return their longest common prefix.
+    """
+    if not lst:
+        return []
+
+    # Start with the first list as a reference
+    prefix = lst[0]
+
+    for headers in lst[1:]:
+        i = 0
+        max_i = min(len(prefix), len(headers))
+        while i < max_i and prefix[i] == headers[i]:
+            i += 1
+        prefix = prefix[:i]
+        if not prefix:
+            break
+
+    return dedupe_preserve_order(prefix)
+
+
+_cache_dir_path = None
+
+def get_cache_dir_path() -> Path:
+    """
+    Resolve the cache directory:
+      - if CLANGPP_AUTOPCH_DIR is set, use it (expanduser)
+      - otherwise use ~/ + _DEFAULT_SUBDIR
+    Returns a Path (not guaranteed to exist).
+    """
+    global _cache_dir_path
+    if _cache_dir_path is not None:
+        return _cache_dir_path
+    env = os.environ.get("CLANGPP_AUTOPCH_DIR")
+    if env:
+        p = Path(env).expanduser()
+    else:
+        p = Path("~").expanduser() / DEFAULT_SUBDIR
+    _cache_dir_path = p   # memoize
+    return p
+
+def create_pch_directory() -> Path:
+    """
+    Ensure the PCH cache directory exists and return its Path.
+    Directory default: ~/.cache/clang++-autopch (or CLANGPP_AUTOPCH_DIR).
+    """
+    p = get_cache_dir_path()
+    # create with parents, don't raise if it already exists
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def generate_pch_name(hash_str: str) -> str:
+    """
+    Return a full filesystem path for a PCH file for the given hash.
+    Example: /home/user/.cache/clang++-autopch/<hash>.pch
+    """
+    p = get_cache_dir_path()
+    return str(p / f"{hash_str}.pch")
+
+def has_pch(hash_str: str) -> bool:
+    """
+    Check whether the PCH file for `hash_str` already exists in the cache dir.
+    """
+    return Path(generate_pch_name(hash_str)).is_file()
+
+def cleanup_cache():
+    import time
+
+    p = get_cache_dir_path()
+
+    now = time.time()
+    entries = []
+
+    pch_name_set = set()
+    hpp_name_set = set()
+
+    with os.scandir(p) as it:
+        for e in it:
+            name = e.name
+            if name.endswith(".pch"):
+                try:
+                    st = e.stat()
+                except OSError:
+                    continue
+                age = now - st.st_mtime
+                path = e.path
+                entries.append((age, path))
+                pch_name_set.add(path[:-4])
+            elif name.endswith(".hpp"):
+                path = e.path
+                hpp_name_set.add(path[:-4])
+
+    # remove orphan hpp files
+    if len(hpp_name_set) > len(pch_name_set):
+        orphans = hpp_name_set - pch_name_set
+        for path in orphans:
+            os.unlink(path + ".hpp")
+
+    # nothing to do
+    if len(entries) < FILES_THRESHOLD * 2:
+        return
+
+    # delete oldest first
+    entries.sort(reverse=True)
+    for age, path in entries:
+        if age < OLD_AGE:
+            break
+        try:
+            os.unlink(path)
+            hpp = path[:-4] + ".hpp"
+            os.unlink(hpp)
+        except OSError:
+            pass
+
+# we always fall back to plain clang++ on any problem
+# never returns
+def run_plain(args):
+    #return subprocess.run(["clang++"] + args).returncode
+    cmd = ["clang++"] + args
+    #return subprocess.run(cmd).returncode
+    os.execvp("clang++", cmd)
+
+# never returns
+def main(args):
+    try:
+
+        # 1. filter arguments
+        filtered_args = filter_clang_arguments(args)
+
+        # 2. extract cpp file names
+        cpp_files = get_cpp_file_names(args)
+        if not cpp_files:
+            return run_plain(args)
+
+        # 3. extract header names per cpp file
+        headers_per_file = []
+        for cpp in cpp_files:
+            headers = extract_std_header_names(cpp)
+            if not headers:
+                return run_plain(args)
+            headers_per_file.append(headers)
+
+        # 4. merge header names
+        merged_headers = merge_headers(headers_per_file)
+        if not merged_headers:
+            return run_plain(args)
+
+        # 5. hash (filtered args + merged headers)
+        cache_key = stable_hash(filtered_args + merged_headers, digest_size=16)
+
+        # 6. check / build PCH
+        pch_path = generate_pch_name(cache_key)
+
+        if not has_pch(cache_key):
+            create_pch_directory()
+            ok = precompile_std_headers(
+                filtered_args,
+                merged_headers,
+                pch_path
+            )
+            if not ok:
+                return run_plain(args)
+
+        if random.random() < 0.01:
+            cleanup_cache()
+
+        # run clang++ with PCH
+        os.utime(pch_path, None)    # mark as used recently
+        cmd = ["clang++"] + args + ["-include-pch", pch_path]
+        #return subprocess.run(cmd).returncode
+        os.execvp("clang++", cmd)
+
+    except Exception as e:
+        debug(e)
+        return run_plain(args)
+
+#sys.exit(main(sys.argv[1:]))
+main(sys.argv[1:])
