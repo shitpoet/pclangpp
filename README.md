@@ -1,6 +1,6 @@
 # Drop-in replacement for `clang++` with automatic std headers precompilation
 
-`clang++-autopch` is a small wrapper around `clang++` that automatically precompiles standard C++ headers (`#include <...>`) used in your source files and reuses them across compilations.
+`pclang++` is a small wrapper around `clang++` that automatically precompiles standard C++ headers (`#include <...>`) used in your source files and reuses them across compilations.
 
 The main goal is to **speed up compilation of small C++ programs**, especially in teaching or interactive workflows where the same tiny file is compiled and run many times with similar flags.
 
@@ -15,16 +15,10 @@ If anything goes wrong, it silently falls back to invoking `clang++` directly.
 
 ## Usage
 
-Use `clang++-autopch` exactly like `clang++`:
+Use `pclang++` exactly like `clang++`:
 
 ```bash
-clang++-autopch -std=c++26 a.cpp -o binary
-```
-
-Wildcard "*.cpp" is supported:
-
-```bash
-clang++-autopch -std=c++26 *.cpp -o binary
+pclang++ -std=c++26 a.cpp -o binary
 ```
 
 The wrapper forwards all arguments to `clang++` and preserves stdout, stderr, and exit codes.
@@ -34,13 +28,13 @@ The wrapper forwards all arguments to `clang++` and preserves stdout, stderr, an
 By default, precompiled headers are stored in:
 
 ```
-~/.cache/clang++-autopch
+~/.cache/pclang++
 ```
 
 You can override this location using the environment variable:
 
 ```bash
-CLANGPP_AUTOPCH_DIR=/path/to/cache
+PCLANGPP_DIR=/path/to/cache
 ```
 
 Each cached entry consists of:

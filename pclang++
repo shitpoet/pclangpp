@@ -6,17 +6,18 @@ import os
 from pathlib import Path
 
 
-DEFAULT_SUBDIR = ".cache/clang++-autopch"
+DEFAULT_SUBDIR = ".cache/pclang++"
 OLD_AGE = 14 * 24 * 3600   # 14 days
 FILES_THRESHOLD = 20       # trigger thresshold
 
 
 DEBUG = None
+#DEBUG = True
 
 def debug(*args, **kwargs):
     global DEBUG
     if DEBUG is None:
-        DEBUG = bool(os.environ.get("CLANGPP_AUTOPCH_DEBUG"))
+        DEBUG = bool(os.environ.get("PCLANGPP_DEBUG"))
     if DEBUG:
         print(*args, **kwargs, file=sys.stderr)
 
@@ -35,7 +36,8 @@ def get_cpp_file_names(argv):
             for name in os.listdir("."):
                 if name.endswith(".cpp") and os.path.isfile(name):
                     cpp_files.append(name)
-        except OSError:
+        except OSError as e:
+            debug(e)
             pass
 
     # remove duplicates, preserve order
@@ -52,7 +54,8 @@ def extract_std_header_names(filename):
     try:
         with open(filename, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
-    except Exception:
+    except Exception as e:
+        debug(e)
         return []
 
     headers = []
@@ -75,8 +78,10 @@ def extract_std_header_names(filename):
 def filter_clang_arguments(argv):
     """
     Return a filtered list of clang++ arguments that are relevant
-    for PCH compatibility.
+    for PCH compatibility. Also drop some unnecessary arguments.
     """
+    result = []
+
     IGNORE_EXACT = {
         "-pedantic",
         "-g", "-g3",
@@ -84,9 +89,7 @@ def filter_clang_arguments(argv):
         "-flto",
     }
 
-    result = []
     skip_next = False
-
     for arg in argv:
         if skip_next:
             skip_next = False
@@ -96,17 +99,26 @@ def filter_clang_arguments(argv):
         if arg.startswith("-W"):
             continue
 
-        # cpp sources / wildcard
-        if arg == "*.cpp" or arg.endswith(".cpp"):
-            continue
-
-        # output flag
-        if arg == "-o":
+        # source type flag (should be "c++")
+        if arg == "-x":
             skip_next = True
             continue
 
         # exact ignored flags
         if arg in IGNORE_EXACT:
+            continue
+
+        # drop linked libraries
+        if arg.startswith('-l'):
+            continue
+
+        # cpp sources
+        if arg.endswith(".cpp"):
+            continue
+
+        # output flag
+        if arg == "-o":
+            skip_next = True
             continue
 
         result.append(arg)
@@ -148,16 +160,29 @@ def precompile_std_headers(filtered_args, header_names, output_file):
             + [hpp_file, "-o", output_file]
         )
 
+        debug(' '.join(cmd))
+
         import subprocess
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if DEBUG:
+            result = subprocess.run(
+                cmd,
+            )
+        else:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        if result.returncode == 0:
+            debug('precompiled header created')
+        else:
+            debug('failed to precompile a header')
 
         return result.returncode == 0
 
-    except Exception:
+    except Exception as e:
+        debug(e)
         return False
 
 def dedupe_preserve_order(seq):
@@ -196,14 +221,14 @@ _cache_dir_path = None
 def get_cache_dir_path() -> Path:
     """
     Resolve the cache directory:
-      - if CLANGPP_AUTOPCH_DIR is set, use it (expanduser)
+      - if PCLANGPP_DIR is set, use it (expanduser)
       - otherwise use ~/ + _DEFAULT_SUBDIR
     Returns a Path (not guaranteed to exist).
     """
     global _cache_dir_path
     if _cache_dir_path is not None:
         return _cache_dir_path
-    env = os.environ.get("CLANGPP_AUTOPCH_DIR")
+    env = os.environ.get("PCLANGPP_DIR")
     if env:
         p = Path(env).expanduser()
     else:
@@ -214,7 +239,7 @@ def get_cache_dir_path() -> Path:
 def create_pch_directory() -> Path:
     """
     Ensure the PCH cache directory exists and return its Path.
-    Directory default: ~/.cache/clang++-autopch (or CLANGPP_AUTOPCH_DIR).
+    Directory default: ~/.cache/pclang++ (or PCLANGPP_DIR).
     """
     p = get_cache_dir_path()
     # create with parents, don't raise if it already exists
@@ -224,7 +249,7 @@ def create_pch_directory() -> Path:
 def generate_pch_name(hash_str: str) -> str:
     """
     Return a full filesystem path for a PCH file for the given hash.
-    Example: /home/user/.cache/clang++-autopch/<hash>.pch
+    Example: /home/user/.cache/pclang++/<hash>.pch
     """
     p = get_cache_dir_path()
     return str(p / f"{hash_str}.pch")
@@ -252,7 +277,8 @@ def cleanup_cache():
             if name.endswith(".pch"):
                 try:
                     st = e.stat()
-                except OSError:
+                except OSError as e:
+                    debug(e)
                     continue
                 age = now - st.st_mtime
                 path = e.path
@@ -281,7 +307,8 @@ def cleanup_cache():
             os.unlink(path)
             hpp = path[:-4] + ".hpp"
             os.unlink(hpp)
-        except OSError:
+        except OSError as e:
+            debug(e)
             pass
 
 # we always fall back to plain clang++ on any problem
@@ -337,6 +364,7 @@ def main(args):
             cleanup_cache()
 
         # run clang++ with PCH
+        debug('use precompiled header')
         os.utime(pch_path, None)    # mark as used recently
         cmd = ["clang++"] + args + ["-include-pch", pch_path]
         #return subprocess.run(cmd).returncode
