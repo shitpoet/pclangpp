@@ -81,6 +81,7 @@ def filter_clang_arguments(argv):
     for PCH compatibility. Also drop some unnecessary arguments.
     """
     result = []
+    has_pch_arg = False
 
     IGNORE_EXACT = {
         "-pedantic",
@@ -112,6 +113,10 @@ def filter_clang_arguments(argv):
         if arg.startswith('-l'):
             continue
 
+        if arg == '-include-pch':
+            has_pch_arg = True
+            break
+
         # cpp sources
         if arg.endswith(".cpp"):
             continue
@@ -123,7 +128,7 @@ def filter_clang_arguments(argv):
 
         result.append(arg)
 
-    return result
+    return result, has_pch_arg
 
 def stable_hash(strings, digest_size=16):
     """
@@ -324,7 +329,9 @@ def main(args):
     try:
 
         # 1. filter arguments
-        filtered_args = filter_clang_arguments(args)
+        filtered_args, has_pch_arg = filter_clang_arguments(args)
+        if has_pch_arg:  # not an error
+            return run_plain(args)
 
         # 2. extract cpp file names
         cpp_files = get_cpp_file_names(args)
