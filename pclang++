@@ -73,7 +73,7 @@ def extract_std_header_names(filename):
         header = s[start + 1:end]
         headers.append(header)
 
-    return headers
+    return dedupe_ordered(headers)
 
 def filter_clang_arguments(argv):
     """
@@ -190,7 +190,7 @@ def precompile_std_headers(filtered_args, header_names, output_file):
         debug(e)
         return False
 
-def dedupe_preserve_order(seq):
+def dedupe_ordered(seq):
     seen = set()
     out = []
     for x in seq:
@@ -218,7 +218,7 @@ def merge_headers(lst):
         if not prefix:
             break
 
-    return dedupe_preserve_order(prefix)
+    return list(sorted(dedupe_ordered(prefix)))
 
 
 _cache_dir_path = None
