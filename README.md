@@ -46,7 +46,7 @@ Each cached entry consists of:
 ## Some limitations
 
 - Only standard headers included with angle brackets (`#include <...>`) are considered.
-- Only `.cpp` source files are supported.
+- Only `.cpp`, `.cxx` and `.cc` source files are supported.
 - Header order matters; only common prefixes across multiple files are used.
 - If standard headers are included in unusual places (e.g. in the middle of a file), they are still detected, but correctness is not guaranteed (for example, `cmath` can introduce conflicts for the later part of a file, but not for the earlier)
 - The tool is **not** a build system and does not replace Make, Ninja, or CMake.
@@ -65,9 +65,9 @@ You can also delete the entire cache directory manually at any time.
 ## How it works
 
 1. The wrapper parses the `clang++` command-line arguments.
-2. It finds all `.cpp` source files
+2. It finds all `.cpp/.cxx/.cc` source files
 3. Each source file is scanned for `#include <...>` directives.
-4. The common set of standard headers is determined and deduplicated.
+4. The common set of standard headers is determined, deduplicated and sorted.
 5. A hash is computed from:
    - the relevant compiler flags
    - the ordered list of standard headers
