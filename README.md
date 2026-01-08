@@ -6,7 +6,7 @@ The main goal is to **speed up compilation of small C++ programs**, especially i
 
 The tool:
 
-- scans `.cpp` files for standard headers
+- scans C++ source files for standard headers
 - builds a single precompiled header (PCH) for them
 - caches the PCH based on compiler flags + headers
 - reuses it transparently on subsequent runs
